@@ -59,7 +59,7 @@ def chunk_processing(
     start: int,
     end: int,
     special_tokens: list[str]
-)-> list[tuple[bytes, ...]]:
+)-> Counter[tuple[bytes, ...]]:
     with open(input_path, "rb") as f:
         f.seek(start)
         chunk=f.read(end-start).decode("utf-8", errors="ignore")
@@ -68,15 +68,15 @@ def chunk_processing(
         text=re.split(pattern=patterns, string=chunk)
     else:
         text=[chunk]
-    ids: list[tuple[bytes, ...]]=[]
+    counts: Counter[tuple[bytes, ...]]=Counter()
     for txt in text:
         if len(txt)==0:
             continue
         for match in compiled_PAT.finditer(txt):
             token_bytes=match.group(0).encode("utf-8")
             cur_tuple=tuple(bytes([b]) for b in token_bytes)
-            ids.append(cur_tuple)
-    return ids
+            counts[cur_tuple]+=1
+    return counts
 
 class MyPair:
     __slots__=("freq", "pair")
@@ -97,46 +97,6 @@ class MyPair:
     def __eq__(self, value: "MyPair")->bool:
         return self.freq==value.freq and self.pair==value.pair
 
-class RemovableHeap:
-    def __init__(self):
-        self.q: list[MyPair]=[]
-        self.rq: list[MyPair]=[]
-
-    def refresh(self):
-        while self.rq and self.rq[0]==self.q[0]:
-            heapq.heappop(self.q)
-            heapq.heappop(self.rq)
-
-    def push(self, x: MyPair):
-        heapq.heappush(self.q, x)
-
-    def remove(self, x: MyPair):
-        heapq.heappush(self.rq, x)
-
-    def top(self)->MyPair:
-        self.refresh()
-        if not self.q:
-            raise IndexError("empty queue")
-        return self.q[0]
-
-    def pop(self)->MyPair:
-        self.refresh()
-        if not self.q:
-            raise IndexError("empty queue")
-        return heapq.heappop(self.q)
-
-    def size(self)->int:
-        return len(self.q)-len(self.rq)
-
-    def empty(self)->bool:
-        return self.size()==0
-
-    def __len__(self)->int:
-        return self.size()
-
-    def __bool__(self)->bool:
-        return not self.empty()
-
 def train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -151,24 +111,21 @@ def train_bpe(
     vocab_id=len(vocab)
 
     # 2. pre-tokenization
-    num_processes=4
+    num_processes=min(multiprocessing.cpu_count(), 16)  
     with open(input_path, "rb") as f:
         boundaries=find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
     chunk_args=[
         (input_path, start, end, special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])
     ]
-    result_chunk: list[tuple[bytes, ...]]=[]
+    tokens_counter: Counter[tuple[bytes, ...]]=Counter()
     with multiprocessing.Pool(processes=num_processes) as pool:
         results=pool.starmap(chunk_processing, chunk_args)
         for chunk_result in results:
-            result_chunk.extend(chunk_result)
+            tokens_counter.update(chunk_result)
 
-    tokens_counter: Counter[tuple[bytes, ...]]=Counter()
     pair_counter: Counter[tuple[bytes, bytes]]=Counter()
     pair_dict: defaultdict[tuple[bytes, bytes], set[int]]=defaultdict(set)
-    for cur_tuple in result_chunk:
-        tokens_counter[cur_tuple]+=1
 
     words: list[list[bytes]]=[]
     for cur_tuple, freq in tokens_counter.items():
@@ -186,23 +143,22 @@ def train_bpe(
             pair_dict[cur_pair].add(wid)
         wid+=1
 
-    pq=RemovableHeap()
-    heap_freq: dict[tuple[bytes, bytes], int]={}
-    for pair, freq in pair_counter.items():
-        if freq==0:
-            continue
-        pq.push(MyPair(freq, pair))
-        heap_freq[pair]=freq
+    heap=[MyPair(freq, pair) for pair, freq in pair_counter.items() if freq>0]
+    heapq.heapify(heap)
 
     num_merges=vocab_size-len(vocab)
     merges: list[tuple[bytes, bytes]]=[]
 
     for i in range(num_merges):
-        if pq.empty():
+        cur_pair=None
+        while heap:
+            top=heapq.heappop(heap)
+            if top.freq==pair_counter.get(top.pair, 0) and top.freq>0:
+                cur_pair=top.pair
+                break
+        if cur_pair is None:
             break
 
-        cur_freq, cur_pair=pq.pop()
-        del heap_freq[cur_pair]
         merge_token=cur_pair[0]+cur_pair[1]
         merges.append(cur_pair)
         vocab[vocab_id]=merge_token
@@ -211,16 +167,16 @@ def train_bpe(
         for word_id in list(pair_dict[cur_pair]):
             old_token=words[word_id]
             old_key=tuple(old_token)
+            freq=tokens_counter[old_key]
+            if freq==0:
+                continue
+
             for j in range(len(old_token)-1):
                 old_pair=(old_token[j], old_token[j+1])
-                if old_pair in heap_freq:
-                    pq.remove(MyPair(pair_counter[old_pair], old_pair))
-                    del heap_freq[old_pair]
-                pair_counter[old_pair]-=tokens_counter[old_key]
+                pair_counter[old_pair]-=freq
                 pair_dict[old_pair].discard(word_id)
                 if pair_counter[old_pair]>0:
-                    pq.push(MyPair(pair_counter[old_pair], old_pair))
-                    heap_freq[old_pair]=pair_counter[old_pair]
+                    heapq.heappush(heap, MyPair(pair_counter[old_pair], old_pair))
 
             new_token: list[bytes]=[]
             p=0; p0, p1=cur_pair
@@ -236,19 +192,14 @@ def train_bpe(
                 new_token.append(old_token[p])
             words[word_id]=new_token
             new_key=tuple(new_token)
-            tokens_counter[new_key]+=tokens_counter[old_key]
+            tokens_counter[new_key]+=freq
             tokens_counter[old_key]=0
 
             for j in range(len(new_token)-1):
                 new_pair=(new_token[j], new_token[j+1])
-                if new_pair in heap_freq:
-                    pq.remove(MyPair(pair_counter[new_pair], new_pair))
-                    del heap_freq[new_pair]
-                pair_counter[new_pair]+=tokens_counter[new_key]
+                pair_counter[new_pair]+=freq
                 pair_dict[new_pair].add(word_id)
-                pq.push(MyPair(pair_counter[new_pair], new_pair))
-                heap_freq[new_pair]=pair_counter[new_pair]
-
+                heapq.heappush(heap, MyPair(pair_counter[new_pair], new_pair))
     return vocab, merges
     # raise NotImplementedError
 
