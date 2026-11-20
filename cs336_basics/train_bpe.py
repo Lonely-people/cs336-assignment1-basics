@@ -251,3 +251,62 @@ def train_bpe(
 
     return vocab, merges
     # raise NotImplementedError
+
+if __name__ == "__main__":
+    import sys
+    import time
+    import resource
+    import argparse
+    import cProfile
+    import pstats
+
+    parser = argparse.ArgumentParser(description="Train a byte-level BPE tokenizer.")
+    parser.add_argument("--input-path", required=True, help="Path to training text file")
+    parser.add_argument("--vocab-size", type=int, default=10000, help="Max vocabulary size (default: 10000)")
+    parser.add_argument("--special-tokens", nargs="+", default=["<|endoftext|>"], help="Special tokens (default: ['<|endoftext|>'])")
+    parser.add_argument("--num-processes", type=int, default=min(multiprocessing.cpu_count(), 16), help="Parallel pre-tokenization workers")
+    parser.add_argument("--profile", action="store_true", help="Profile with cProfile, sorted by tottime")
+    parser.add_argument("--top-n", type=int, default=30, help="Number of functions to show in profile output (default: 30)")
+    args = parser.parse_args()
+
+    profiler = cProfile.Profile() if args.profile else None
+    if profiler: profiler.enable()
+
+    t0 = time.perf_counter()
+    vocab, merges = train_bpe(
+        input_path=args.input_path,
+        vocab_size=args.vocab_size,
+        special_tokens=args.special_tokens,
+        num_processes=args.num_processes,
+    )
+    elapsed = time.perf_counter() - t0
+
+    if profiler: profiler.disable()
+
+    peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+
+    special_set = {tok.encode() for tok in args.special_tokens}
+    longest = max(vocab.values(), key=len)
+    regular = [v for v in vocab.values() if v not in special_set]
+    longest_reg = max(regular, key=len) if regular else longest
+
+    def _decode(b):
+        try: return b.decode()
+        except UnicodeDecodeError: return repr(b)
+
+    print(f"\n{'='*60}")
+    print(f"Training Done — no files saved")
+    print(f"  Time:            {elapsed:.2f}s  ({elapsed/60:.2f} min)")
+    print(f"  Peak RSS:        {peak_mb:.1f} MB")
+    print(f"  Vocab size:      {len(vocab)}")
+    print(f"  Merges:          {len(merges)}")
+    print(f"  Longest token:   {_decode(longest)!r}  ({len(longest)} bytes)")
+    if longest_reg != longest:
+        print(f"  Longest regular: {_decode(longest_reg)!r}  ({len(longest_reg)} bytes)")
+    print(f"{'='*60}")
+
+    if profiler:
+        print(f"\n{'='*70}")
+        print(f"cProfile — top {args.top_n} functions by tottime:")
+        print(f"{'='*70}")
+        pstats.Stats(profiler).sort_stats("tottime").print_stats(args.top_n)
