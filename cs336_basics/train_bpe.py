@@ -78,6 +78,27 @@ def chunk_processing(
             counts[cur_tuple]+=1
     return counts
 
+def Merge_Pair(old_token: list[bytes], pair: tuple[bytes, bytes])->list[bytes]:
+    p=0; tok_len=len(old_token)
+    new_tok: list[bytes]=[]
+    while p+1<tok_len:
+        if p<tok_len and (old_token[p], old_token[p+1])==pair:
+            new_tok.append(pair[0]+pair[1])
+            p+=2
+        else:
+            new_tok.append(old_token[p])
+            p+=1
+    if p<tok_len:
+        new_tok.append(old_token[p])
+    return new_tok
+
+def get_all_pairs(tokens: list[bytes])->list[tuple[bytes, bytes]]:
+    p=0; tok_len=len(tokens)
+    result: list[tuple[bytes, bytes]]=[]
+    for i in range(tok_len-1):
+        result.append((tokens[i], tokens[i+1]))
+    return result
+
 class MyPair:
     __slots__=("freq", "pair")
 
@@ -171,32 +192,21 @@ def train_bpe(
             if freq==0:
                 continue
 
-            for j in range(len(old_token)-1):
-                old_pair=(old_token[j], old_token[j+1])
+            all_old_pairs=get_all_pairs(old_token)
+            for old_pair in all_old_pairs:
                 pair_counter[old_pair]-=freq
                 pair_dict[old_pair].discard(word_id)
                 if pair_counter[old_pair]>0:
                     heapq.heappush(heap, MyPair(pair_counter[old_pair], old_pair))
 
-            new_token: list[bytes]=[]
-            p=0; p0, p1=cur_pair
-            tok_len=len(old_token)
-            while p+1<tok_len:
-                if p<tok_len and old_token[p]==p0 and old_token[p+1]==p1:
-                    new_token.append(merge_token)
-                    p+=2
-                else:
-                    new_token.append(old_token[p])
-                    p+=1
-            if p<tok_len:
-                new_token.append(old_token[p])
+            new_token: list[bytes]=Merge_Pair(old_token, cur_pair)
             words[word_id]=new_token
             new_key=tuple(new_token)
             tokens_counter[new_key]+=freq
             tokens_counter[old_key]=0
 
-            for j in range(len(new_token)-1):
-                new_pair=(new_token[j], new_token[j+1])
+            all_new_pairs=get_all_pairs(new_token)
+            for new_pair in all_new_pairs:
                 pair_counter[new_pair]+=freq
                 pair_dict[new_pair].add(word_id)
                 heapq.heappush(heap, MyPair(pair_counter[new_pair], new_pair))
