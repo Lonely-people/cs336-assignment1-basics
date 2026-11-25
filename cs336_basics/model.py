@@ -52,3 +52,27 @@ class RMSNorm(nn.Module):
         x_norm=einx.divide("... d_model, ... -> ... d_model", x, rms)
         result=einx.multiply("... d_model, d_model -> ... d_model", x_norm, self.weight)
         return result.to(in_dtype)
+
+class SwiGLU(nn.Module):
+    def __init__(self,
+                d_model: int,
+                d_ff: int | None=None,
+                device: torch.device | None=None,
+                dtype: torch.dtype | None=None):
+        super().__init__()
+        self.d_model=d_model
+        if d_ff is None:
+            self.d_ff=int(8/3*d_model)
+            self.d_ff=(self.d_ff+63)//64*64
+        else:
+            self.d_ff=d_ff
+        self.W1=Linear(self.d_model, self.d_ff, device=device, dtype=dtype)
+        self.W2=Linear(self.d_ff, self.d_model, device=device, dtype=dtype)
+        self.W3=Linear(self.d_model, self.d_ff, device=device, dtype=dtype)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w1=self.W1(x)
+        w3=self.W3(x)
+        silu=einx.multiply("... d_ff, ... d_ff -> ... d_ff", w1, torch.sigmoid(w1))
+        glu=einx.multiply("... d_ff, ... d_ff -> ... d_ff", silu, w3)
+        return self.W2(glu)
