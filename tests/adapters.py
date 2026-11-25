@@ -31,7 +31,7 @@ def run_linear(
     from cs336_basics.model import Linear
     linear=Linear(d_in, d_out)
     linear.load_state_dict({"W": weights})
-    return linear.forward(in_features)
+    return linear(in_features)
     # raise NotImplementedError
 
 
@@ -56,7 +56,7 @@ def run_embedding(
     from cs336_basics.model import Embedding
     embedding=Embedding(vocab_size, d_model)
     embedding.load_state_dict({"weight": weights})
-    return embedding.forward(token_ids)
+    return embedding(token_ids)
     # raise NotImplementedError
 
 
@@ -395,7 +395,7 @@ def run_rmsnorm(
     from cs336_basics.model import RMSNorm
     rmsnorm=RMSNorm(d_model=d_model, eps=eps)
     rmsnorm.load_state_dict({"weight": weights})
-    return rmsnorm.forward(in_features)
+    return rmsnorm(in_features)
     # raise NotImplementedError
 
 
