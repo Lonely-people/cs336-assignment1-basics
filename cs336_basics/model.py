@@ -109,6 +109,50 @@ def scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tens
     d_k=Q.shape[-1]
     score=einx.dot("... n d_k, ... m d_k -> ... n m", Q, K)/sqrt(d_k)
     if mask is not None:
-        score=einx.where("... n m, ... n m, -> ... n m", mask, score, float("-inf"))
+        # score=einx.where("... n m, ... n m, -> ... n m", mask, score, float("-inf"))
+        score=torch.where(mask, score, float("-inf"))
     sftmx=softmax(score, dim=-1)
     return einx.dot("... n m, ... m d_v -> ... n d_v", sftmx, V)
+
+class MultiHead_self_Attention(nn.Module):
+    def __init__(self,
+                d_model: int,
+                num_heads: int,
+                device: torch.device | None=None,
+                dtype: torch.dtype | None=None):
+        super().__init__()
+        self.d_model=d_model
+        self.num_heads=num_heads
+        self.d_k=d_model//num_heads
+        self.d_v=d_model//num_heads
+        self.Q_proj=Linear(d_model, num_heads*self.d_k, device=device, dtype=dtype)
+        self.K_proj=Linear(d_model, num_heads*self.d_k, device=device, dtype=dtype)
+        self.V_proj=Linear(d_model, num_heads*self.d_v, device=device, dtype=dtype)
+        self.Output_proj=Linear(num_heads*self.d_v, d_model, device=device, dtype=dtype)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        seq_len=x.shape[-2]
+        q=einx.id("... seq (h d_k) -> ... h seq d_k", self.Q_proj(x), h=self.num_heads)
+        k=einx.id("... seq (h d_k) -> ... h seq d_k", self.K_proj(x), h=self.num_heads)
+        v=einx.id("... seq (h d_v) -> ... h seq d_v", self.V_proj(x), h=self.num_heads)
+        causal_mask=torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=x.device))
+        attn=scaled_dot_product_attention(q, k, v, mask=causal_mask)
+        result=einx.id("... h seq d_v -> ... seq (h d_v)", attn)
+        return self.Output_proj(result)
+
+class MultiHead_self_Attention_with_RoPE(MultiHead_self_Attention):
+    def __init__(self, d_model, num_heads, theta: float, max_seq_len: int, device = None, dtype = None):
+        super().__init__(d_model, num_heads, device, dtype)
+        self.rope=RotaryPositionalEmbedding(theta=theta, d_k=self.d_k, max_seq_len=max_seq_len, device=device)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        seq_len=x.shape[-2]
+        q=einx.id("... seq (h d_k) -> ... h seq d_k", self.Q_proj(x), h=self.num_heads)
+        k=einx.id("... seq (h d_k) -> ... h seq d_k", self.K_proj(x), h=self.num_heads)
+        v=einx.id("... seq (h d_v) -> ... h seq d_v", self.V_proj(x), h=self.num_heads)
+        q=self.rope(q, token_positions)
+        k=self.rope(k, token_positions)
+        causal_mask=torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=x.device))
+        attn=scaled_dot_product_attention(q, k, v, mask=causal_mask)
+        result=einx.id("... h seq d_v -> ... seq (h d_v)", attn)
+        return self.Output_proj(result)
