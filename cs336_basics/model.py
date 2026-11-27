@@ -96,10 +96,10 @@ class RotaryPositionalEmbedding(nn.Module):
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         cos=einx.get_at("[s] d, ... -> ... d", self.cos_cache, token_positions).to(x.dtype)
         sin=einx.get_at("[s] d, ... -> ... d", self.sin_cache, token_positions).to(x.dtype)
-        x_even, x_odd=einx.rearrange("... (d p) -> p ... d", x, p=2)
+        x_even, x_odd=einx.id("... (d p) -> p ... d", x, p=2)
         res_even=x_even*cos-x_odd*sin
         res_odd=x_even*sin+x_odd*cos
-        return einx.rearrange("... d, ... d -> ... (d (1 + 1))", res_even, res_odd)
+        return einx.id("... d, ... d -> ... (d (1 + 1))", res_even, res_odd)
     
 def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     x_exp=torch.exp(x-x.max(dim=dim, keepdim=True).values)
