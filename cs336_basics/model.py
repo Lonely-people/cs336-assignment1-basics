@@ -156,3 +156,29 @@ class MultiHead_self_Attention_with_RoPE(MultiHead_self_Attention):
         attn=scaled_dot_product_attention(q, k, v, mask=causal_mask)
         result=einx.id("... h seq d_v -> ... seq (h d_v)", attn)
         return self.Output_proj(result)
+
+class TransformerBlock(nn.Module):
+    def __init__(self,
+                d_model: int,
+                num_heads: int,
+                d_ff: int,
+                max_seq_len: int,
+                theta: float,
+                device: torch.device | None=None,
+                dtype: torch.dtype | None=None):
+        super().__init__()
+        self.d_model=d_model
+        self.num_heads=num_heads
+        self.d_ff=d_ff
+        self.attn=MultiHead_self_Attention_with_RoPE(d_model=d_model, num_heads=num_heads, theta=theta, max_seq_len=max_seq_len, device=device, dtype=dtype)
+        self.ffn=SwiGLU(d_model=d_model, d_ff=d_ff, device=device, dtype=dtype)
+        self.norm_1=RMSNorm(d_model=d_model, device=device, dtype=dtype)
+        self.norm_2=RMSNorm(d_model=d_model, device=device, dtype=dtype)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        positions=torch.arange(0, x.shape[-2], device=x.device)
+        attn=self.attn(self.norm_1(x), positions)
+        x=einx.add("... seq d_model, ... seq d_model -> ... seq d_model", x, attn)
+        ffn=self.ffn(self.norm_2(x))
+        x=einx.add("... seq d_model, ... seq d_model -> ... seq d_model", x, ffn)
+        return x
