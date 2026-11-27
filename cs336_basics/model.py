@@ -76,3 +76,27 @@ class SwiGLU(nn.Module):
         silu=einx.multiply("... d_ff, ... d_ff -> ... d_ff", w1, torch.sigmoid(w1))
         glu=einx.multiply("... d_ff, ... d_ff -> ... d_ff", silu, w3)
         return self.W2(glu)
+
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self,
+                theta: float,
+                d_k: int,
+                max_seq_len: int,
+                device: torch.device | None=None):
+        super().__init__()
+        self.theta=theta
+        self.d_k=d_k
+        self.max_seq_len=max_seq_len
+        positions=torch.arange(max_seq_len, device=device, dtype=torch.float32)
+        freqs=1.0/(theta**(torch.arange(0, d_k, 2, device=device, dtype=torch.float32)/d_k))
+        angles=einx.multiply("s, d -> s d", positions, freqs)
+        self.register_buffer("cos_cache", torch.cos(angles), persistent=False)
+        self.register_buffer("sin_cache", torch.sin(angles), persistent=False)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        cos=einx.get_at("[s] d, ... -> ... d", self.cos_cache, token_positions).to(x.dtype)
+        sin=einx.get_at("[s] d, ... -> ... d", self.sin_cache, token_positions).to(x.dtype)
+        x_even, x_odd=einx.rearrange("... (d p) -> p ... d", x, p=2)
+        res_even=x_even*cos-x_odd*sin
+        res_odd=x_even*sin+x_odd*cos
+        return einx.rearrange("... d, ... d -> ... (d (1 + 1))", res_even, res_odd)
